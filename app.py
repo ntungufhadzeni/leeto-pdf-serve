@@ -1,12 +1,28 @@
 import os
 from flask import Flask, flash, request, redirect, render_template, send_from_directory
+from sqlalchemy import desc
 from werkzeug.utils import secure_filename
 from waitress import serve
+from config import database_uri
+from models import db, Announcement
+from form import AnnouncementForm
+from flask_marshmallow import Marshmallow
 
 app = Flask(__name__)
 app.secret_key = os.urandom(15)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+app.config['SQLALCHEMY_DATABASE_URI'] = database_uri
+ma = Marshmallow(app)
+
+db.init_app(app)
 path = os.getcwd()
+
+
+class AnnouncementSchema(ma.Schema):
+    class Meta:
+        # Fields to expose
+        fields = ("id", "date", "title", "media")
+
 
 UPLOAD_FOLDER = os.path.join(path, 'uploads')
 
@@ -22,35 +38,35 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-@app.route('/')
-def upload_form():
-    return render_template('upload.html')
+@app.route('/', methods=['GET', 'POST'])
+def post_announcement():
+    form = AnnouncementForm()
+    if form.validate_on_submit():
+        file = form.upload.data
+        title = form.title.data
+        date = form.date.data.strftime('%B %d, %Y')
+        ext = secure_filename(file.filename)[-4:]
+        filename = '-'.join(title.split()) + '-' + form.date.data.strftime('%B-%d-%Y') + ext
+        file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+        post = Announcement(date, title, filename)
+        db.session.add(post)
+        db.session.commit()
+        flash('File successfully uploaded')
+        return redirect('/')
+    return render_template('upload.html', form=form)
 
 
-@app.route('/', methods=['POST'])
-def upload_file():
-    if request.method == 'POST':
-        # check if the post request has the file part
-        if 'file' not in request.files:
-            flash('No file part')
-            return redirect(request.url)
-        file = request.files['file']
-        if file.filename == '':
-            flash('No file selected for uploading')
-            return redirect(request.url)
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-            flash('File successfully uploaded')
-            return redirect('/')
-        else:
-            flash('Upload pdf only')
-            return redirect(request.url)
+@app.route('/api/v1/announcements', methods=['GET'])
+def get_all():
+    announcement = Announcement.query.order_by(desc(Announcement.id)).all()
+    announcement_schema = AnnouncementSchema(many=True)
+    return announcement_schema.dump(announcement)
 
 
-@app.route('/article/<article_pdf>', methods=['GET'])
-def get_article(article_pdf):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], article_pdf)
+@app.route('/api/v1/announcement/<announcement_id>', methods=['GET'])
+def get_article(announcement_id):
+    announcement = Announcement.query.filter_by(id=announcement_id).first()
+    return send_from_directory(app.config['UPLOAD_FOLDER'], announcement.media)
 
 
 if __name__ == "__main__":
